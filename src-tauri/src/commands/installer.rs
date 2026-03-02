@@ -592,50 +592,20 @@ async fn install_openclaw_windows() -> Result<InstallResult, String> {
 
     info!("[安装OpenClaw] Node.js 已安装: {:?}", node_check);
 
-    // 检查并安装 Build Tools（用于编译 native 模块）
+    // 检查 Build Tools（用于编译 native 模块）
     info!("[安装OpenClaw] 检查 Visual Studio Build Tools...");
-    if !check_build_tools_installed() {
-        warn!("[安装OpenClaw] 未检测到 Build Tools，开始安装...");
+    let has_build_tools = check_build_tools_installed();
 
-        let build_tools_result = install_build_tools().await?;
-        if !build_tools_result.success {
-            // Build Tools 安装失败，但可以尝试继续安装 OpenClaw（跳过可选依赖）
-            warn!("[安装OpenClaw] Build Tools 安装失败，将跳过可选依赖");
-            info!("[安装OpenClaw] 使用 --omit=optional 跳过 node-llama-cpp 等依赖");
-
-            let install_cmd = "npm install -g openclaw@latest --omit=optional";
-            info!("[安装OpenClaw] 执行命令: {}", install_cmd);
-
-            match shell::run_cmd_output(install_cmd) {
-                Ok(output) => {
-                    info!("[安装OpenClaw] npm 输出: {}", output);
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-
-                    if get_openclaw_version().is_some() {
-                        return Ok(InstallResult {
-                            success: true,
-                            message: "OpenClaw 安装成功！（已跳过本地 LLM 支持）".to_string(),
-                            error: Some("本地 LLM 功能不可用，但 API 模式正常工作".to_string()),
-                        });
-                    }
-                }
-                Err(e) => {
-                    return Ok(InstallResult {
-                        success: false,
-                        message: "OpenClaw 安装失败".to_string(),
-                        error: Some(e),
-                    });
-                }
-            }
-        } else {
-            info!("[安装OpenClaw] ✓ Build Tools 已安装");
-        }
+    // 根据 Build Tools 状态选择安装方式
+    let install_cmd = if !has_build_tools {
+        warn!("[安装OpenClaw] 未检测到 Build Tools");
+        info!("[安装OpenClaw] 将跳过可选依赖（本地 LLM 功能）以避免编译错误");
+        "npm install -g openclaw@latest --omit=optional"
     } else {
-        info!("[安装OpenClaw] ✓ Build Tools 已存在");
-    }
+        info!("[安装OpenClaw] ✓ Build Tools 已存在，将安装完整版本");
+        "npm install -g openclaw@latest"
+    };
 
-    // 使用 cmd.exe 执行 npm install（避免 PowerShell 执行策略问题）
-    let install_cmd = "npm install -g openclaw@latest";
     info!("[安装OpenClaw] 执行命令: {}", install_cmd);
 
     match shell::run_cmd_output(install_cmd) {
