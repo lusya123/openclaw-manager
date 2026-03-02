@@ -492,6 +492,87 @@ pub async fn install_openclaw() -> Result<InstallResult, String> {
     result
 }
 
+/// 检查 Visual Studio Build Tools 是否已安装
+fn check_build_tools_installed() -> bool {
+    info!("[依赖检查] 检查 Visual Studio Build Tools...");
+
+    // 方法1: 检查 vswhere.exe（Visual Studio 安装器）
+    let vswhere_check = shell::run_cmd_output(
+        r#""C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath"#
+    );
+
+    if vswhere_check.is_ok() && !vswhere_check.unwrap().trim().is_empty() {
+        info!("[依赖检查] ✓ 通过 vswhere 检测到 Build Tools");
+        return true;
+    }
+
+    // 方法2: 检查常见的 MSBuild 路径
+    let msbuild_paths = vec![
+        r"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
+        r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
+        r"C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe",
+    ];
+
+    for path in msbuild_paths {
+        if std::path::Path::new(path).exists() {
+            info!("[依赖检查] ✓ 在 {} 找到 MSBuild", path);
+            return true;
+        }
+    }
+
+    // 方法3: 尝试运行 cl.exe（C++ 编译器）
+    if shell::run_cmd_output("cl.exe").is_ok() {
+        info!("[依赖检查] ✓ cl.exe 可用");
+        return true;
+    }
+
+    info!("[依赖检查] ✗ 未检测到 Build Tools");
+    false
+}
+
+/// 安装 Visual Studio Build Tools
+async fn install_build_tools() -> Result<InstallResult, String> {
+    info!("[安装依赖] 开始安装 Visual Studio Build Tools...");
+
+    // 使用 winget 安装 Build Tools
+    let install_cmd = "winget install --id Microsoft.VisualStudio.2022.BuildTools --override \"--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"";
+
+    info!("[安装依赖] 执行命令: {}", install_cmd);
+    info!("[安装依赖] 注意：Build Tools 安装可能需要几分钟，请耐心等待...");
+
+    match shell::run_cmd_output(install_cmd) {
+        Ok(output) => {
+            info!("[安装依赖] winget 输出: {}", output);
+
+            // 等待安装完成
+            std::thread::sleep(std::time::Duration::from_secs(3));
+
+            // 验证安装
+            if check_build_tools_installed() {
+                Ok(InstallResult {
+                    success: true,
+                    message: "Visual Studio Build Tools 安装成功！".to_string(),
+                    error: None,
+                })
+            } else {
+                Ok(InstallResult {
+                    success: false,
+                    message: "Build Tools 安装完成，但可能需要重启系统".to_string(),
+                    error: Some("请重启系统后重试".to_string()),
+                })
+            }
+        }
+        Err(e) => {
+            warn!("[安装依赖] Build Tools 安装失败: {}", e);
+            Ok(InstallResult {
+                success: false,
+                message: "Build Tools 安装失败".to_string(),
+                error: Some(format!("建议手动安装: {}", e)),
+            })
+        }
+    }
+}
+
 /// Windows 安装 OpenClaw
 async fn install_openclaw_windows() -> Result<InstallResult, String> {
     // 使用 cmd.exe 而不是 PowerShell，避免执行策略问题
@@ -510,6 +591,48 @@ async fn install_openclaw_windows() -> Result<InstallResult, String> {
     }
 
     info!("[安装OpenClaw] Node.js 已安装: {:?}", node_check);
+
+    // 检查并安装 Build Tools（用于编译 native 模块）
+    info!("[安装OpenClaw] 检查 Visual Studio Build Tools...");
+    if !check_build_tools_installed() {
+        warn!("[安装OpenClaw] 未检测到 Build Tools，开始安装...");
+
+        let build_tools_result = install_build_tools().await?;
+        if !build_tools_result.success {
+            // Build Tools 安装失败，但可以尝试继续安装 OpenClaw（跳过可选依赖）
+            warn!("[安装OpenClaw] Build Tools 安装失败，将跳过可选依赖");
+            info!("[安装OpenClaw] 使用 --omit=optional 跳过 node-llama-cpp 等依赖");
+
+            let install_cmd = "npm install -g openclaw@latest --omit=optional";
+            info!("[安装OpenClaw] 执行命令: {}", install_cmd);
+
+            match shell::run_cmd_output(install_cmd) {
+                Ok(output) => {
+                    info!("[安装OpenClaw] npm 输出: {}", output);
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+
+                    if get_openclaw_version().is_some() {
+                        return Ok(InstallResult {
+                            success: true,
+                            message: "OpenClaw 安装成功！（已跳过本地 LLM 支持）".to_string(),
+                            error: Some("本地 LLM 功能不可用，但 API 模式正常工作".to_string()),
+                        });
+                    }
+                }
+                Err(e) => {
+                    return Ok(InstallResult {
+                        success: false,
+                        message: "OpenClaw 安装失败".to_string(),
+                        error: Some(e),
+                    });
+                }
+            }
+        } else {
+            info!("[安装OpenClaw] ✓ Build Tools 已安装");
+        }
+    } else {
+        info!("[安装OpenClaw] ✓ Build Tools 已存在");
+    }
 
     // 使用 cmd.exe 执行 npm install（避免 PowerShell 执行策略问题）
     let install_cmd = "npm install -g openclaw@latest";
