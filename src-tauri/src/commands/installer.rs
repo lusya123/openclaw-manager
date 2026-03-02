@@ -324,76 +324,63 @@ pub async fn install_nodejs() -> Result<InstallResult, String> {
 
 /// Windows 安装 Node.js
 async fn install_nodejs_windows() -> Result<InstallResult, String> {
-    // 使用 winget 安装 Node.js（Windows 10/11 自带）
-    let script = r#"
-$ErrorActionPreference = 'Stop'
+    info!("[安装Node.js] 开始 Windows Node.js 安装流程...");
 
-# 检查是否已安装
-$nodeVersion = node --version 2>$null
-if ($nodeVersion) {
-    Write-Host "Node.js 已安装: $nodeVersion"
-    exit 0
-}
-
-# 优先使用 winget
-$hasWinget = Get-Command winget -ErrorAction SilentlyContinue
-if ($hasWinget) {
-    Write-Host "使用 winget 安装 Node.js..."
-    winget install --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "Node.js 安装成功！"
-        exit 0
+    // 先检查是否已安装
+    if let Ok(version) = shell::run_cmd_output("node --version") {
+        info!("[安装Node.js] Node.js 已安装: {}", version);
+        return Ok(InstallResult {
+            success: true,
+            message: format!("Node.js 已安装: {}", version),
+            error: None,
+        });
     }
-}
 
-# 备用方案：使用 fnm (Fast Node Manager)
-Write-Host "尝试使用 fnm 安装 Node.js..."
-$fnmInstallScript = "irm https://fnm.vercel.app/install.ps1 | iex"
-Invoke-Expression $fnmInstallScript
+    // 使用 cmd.exe 调用 winget（避免 PowerShell 执行策略问题）
+    info!("[安装Node.js] 尝试使用 winget 安装...");
 
-# 配置 fnm 环境
-$env:FNM_DIR = "$env:USERPROFILE\.fnm"
-$env:Path = "$env:FNM_DIR;$env:Path"
+    // 先检查 winget 是否可用
+    if shell::run_cmd_output("winget --version").is_ok() {
+        info!("[安装Node.js] winget 可用，开始安装 Node.js LTS...");
 
-# 安装 Node.js 22
-fnm install 22
-fnm default 22
-fnm use 22
+        let install_cmd = "winget install --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements";
+        match shell::run_cmd_output(install_cmd) {
+            Ok(output) => {
+                info!("[安装Node.js] winget 输出: {}", output);
 
-# 验证安装
-$nodeVersion = node --version 2>$null
-if ($nodeVersion) {
-    Write-Host "Node.js 安装成功: $nodeVersion"
-    exit 0
-} else {
-    Write-Host "Node.js 安装失败"
-    exit 1
-}
-"#;
-    
-    match shell::run_powershell_output(script) {
-        Ok(output) => {
-            // 验证安装
-            if get_node_version().is_some() {
-                Ok(InstallResult {
-                    success: true,
-                    message: "Node.js 安装成功！请重启应用以使环境变量生效。".to_string(),
-                    error: None,
-                })
-            } else {
-                Ok(InstallResult {
-                    success: false,
-                    message: "安装后需要重启应用".to_string(),
-                    error: Some(output),
-                })
+                // 等待安装完成
+                std::thread::sleep(std::time::Duration::from_secs(2));
+
+                // 验证安装
+                if get_node_version().is_some() {
+                    return Ok(InstallResult {
+                        success: true,
+                        message: "Node.js 安装成功！请重启应用以使环境变量生效。".to_string(),
+                        error: None,
+                    });
+                } else {
+                    return Ok(InstallResult {
+                        success: false,
+                        message: "安装完成，但需要重启应用以使环境变量生效".to_string(),
+                        error: Some("请重启应用".to_string()),
+                    });
+                }
+            }
+            Err(e) => {
+                warn!("[安装Node.js] winget 安装失败: {}", e);
+                // 继续尝试其他方法
             }
         }
-        Err(e) => Ok(InstallResult {
-            success: false,
-            message: "Node.js 安装失败".to_string(),
-            error: Some(e),
-        }),
+    } else {
+        warn!("[安装Node.js] winget 不可用");
     }
+
+    // winget 失败，返回错误并建议手动安装
+    Ok(InstallResult {
+        success: false,
+        message: "自动安装失败，请手动安装 Node.js".to_string(),
+        error: Some("建议从 https://nodejs.org 下载安装".to_string()),
+    })
 }
 
 /// macOS 安装 Node.js
@@ -507,32 +494,35 @@ pub async fn install_openclaw() -> Result<InstallResult, String> {
 
 /// Windows 安装 OpenClaw
 async fn install_openclaw_windows() -> Result<InstallResult, String> {
-    let script = r#"
-$ErrorActionPreference = 'Stop'
+    // 使用 cmd.exe 而不是 PowerShell，避免执行策略问题
+    // Windows 上 npm 同时提供 npm.cmd 和 npm.ps1，cmd 可以直接调用 npm.cmd
+    info!("[安装OpenClaw] 使用 cmd.exe 执行 npm install...");
 
-# 检查 Node.js
-$nodeVersion = node --version 2>$null
-if (-not $nodeVersion) {
-    Write-Host "错误：请先安装 Node.js"
-    exit 1
-}
+    // 先检查 Node.js
+    let node_check = shell::run_cmd_output("node --version");
+    if node_check.is_err() {
+        warn!("[安装OpenClaw] Node.js 未安装或不在 PATH 中");
+        return Ok(InstallResult {
+            success: false,
+            message: "请先安装 Node.js".to_string(),
+            error: Some("Node.js 未找到".to_string()),
+        });
+    }
 
-Write-Host "使用 npm 安装 OpenClaw..."
-npm install -g openclaw@latest --unsafe-perm
+    info!("[安装OpenClaw] Node.js 已安装: {:?}", node_check);
 
-# 验证安装
-$openclawVersion = openclaw --version 2>$null
-if ($openclawVersion) {
-    Write-Host "OpenClaw 安装成功: $openclawVersion"
-    exit 0
-} else {
-    Write-Host "OpenClaw 安装失败"
-    exit 1
-}
-"#;
-    
-    match shell::run_powershell_output(script) {
+    // 使用 cmd.exe 执行 npm install（避免 PowerShell 执行策略问题）
+    let install_cmd = "npm install -g openclaw@latest";
+    info!("[安装OpenClaw] 执行命令: {}", install_cmd);
+
+    match shell::run_cmd_output(install_cmd) {
         Ok(output) => {
+            info!("[安装OpenClaw] npm 输出: {}", output);
+
+            // 等待一下让文件系统同步
+            std::thread::sleep(std::time::Duration::from_millis(500));
+
+            // 验证安装
             if get_openclaw_version().is_some() {
                 Ok(InstallResult {
                     success: true,
@@ -547,11 +537,14 @@ if ($openclawVersion) {
                 })
             }
         }
-        Err(e) => Ok(InstallResult {
-            success: false,
-            message: "OpenClaw 安装失败".to_string(),
-            error: Some(e),
-        }),
+        Err(e) => {
+            warn!("[安装OpenClaw] npm install 失败: {}", e);
+            Ok(InstallResult {
+                success: false,
+                message: "OpenClaw 安装失败".to_string(),
+                error: Some(e),
+            })
+        }
     }
 }
 
